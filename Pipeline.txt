@@ -1,0 +1,59 @@
+CI/CD Pipeline Design for latency-probe
+========================================
+
+Overview
+--------
+The pipeline follows a standard shift-left model: fast feedback (lint) runs
+first and gates slower stages (test, build, deploy). Every stage runs only
+if the previous one passes, preventing wasted compute.
+
+Stages
+------
+
+1. Lint & Format (fastest, ~30s)
+   - black --check: enforces consistent formatting
+   - isort --check-only: keeps imports alphabetically ordered and grouped
+   - flake8: catches style violations and common bugs
+   Why first: formatting errors are trivially cheap to detect and fix.
+   Finding them before running tests saves time.
+
+2. Test (~1–2 min)
+   - pytest with coverage report
+   - Gate: fail if coverage drops below a threshold (e.g. 70%)
+   Why after lint: no point running tests on unformatted code. Tests are
+   slower and should only run on code that passed basic hygiene.
+
+3. Docker Build (~2–3 min)
+   - docker buildx build with GitHub Actions cache (type=gha)
+   - Multi-stage build: builder stage (uv install) + slim runtime stage
+   - push: false in CI — validates the image builds without a real registry
+   - In a real CD pipeline, push: true + tag with git SHA for traceability
+   Why after tests: building an image from broken code wastes registry space
+   and could be accidentally deployed.
+
+4. (Optional, not in this repo) Deploy
+   - kubectl apply -f manifests/ against a staging cluster
+   - Smoke test: hit /health and /probe endpoints
+   - Promote to production via environment approval gate in GitHub Actions
+   - Rollback: kubectl rollout undo deployment/latency-probe
+
+Branching Strategy
+------------------
+- main: protected branch, requires passing CI + PR review
+- feature/*: short-lived branches merged via PR
+- No release branches needed at this project scale; git tags mark releases
+
+Security Considerations
+-----------------------
+- OIDC authentication to AWS (no long-lived access keys stored in secrets)
+- ECR image scanning on push (AWS Inspector)
+- Docker image runs as non-root (UID 1001)
+- Secrets (future: API keys, DB credentials) stored in GitHub Actions Secrets
+  and injected as env vars, never baked into the image
+
+Monitoring
+----------
+- Structured stdout logs (key=value) aggregated by CloudWatch Logs / Loki
+- Alert on error rate > 5% of probe results in a 5-minute window
+- k8s readiness + liveness probes ensure bad pods are removed from service
+  before operators are paged

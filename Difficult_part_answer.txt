@@ -1,0 +1,43 @@
+What was the most difficult part of this assignment?
+=====================================================
+
+The hardest design decision was around concurrency and state management.
+
+The assignment asks for a REST service that accepts a URL and an interval,
+then continuously polls that URL at the given frequency. The natural
+implementation is a background loop — but how do you run background loops
+inside a web server cleanly?
+
+The options I considered:
+
+1. Thread per job (threading.Thread):
+   Simple to understand, but CPython's GIL limits true parallelism for
+   CPU-bound work, and thread safety around the _jobs dict requires locks.
+   For I/O-bound polling (which this is), threads mostly just sleep and wake
+   — acceptable but noisier than necessary.
+
+2. Celery + Redis:
+   Proper distributed task queue, survives restarts, supports multiple
+   workers. Overkill for this scale — adds two infrastructure components
+   (broker + result backend) and significant operational overhead for what
+   is essentially a demo service.
+
+3. asyncio.create_task (chosen):
+   Each probe job is a coroutine scheduled on the same event loop that
+   FastAPI/uvicorn uses. No threads, no extra processes, no external
+   dependencies. The event loop multiplexes between serving HTTP requests
+   and running probe tasks through cooperative multitasking — when a probe
+   task calls `await asyncio.sleep(interval)` or `await client.get(url)`,
+   the event loop is free to handle other work.
+
+   The trade-off: state lives in the process's memory (_jobs dict). If the
+   pod restarts, all running jobs are lost. For production, this would be
+   addressed by persisting jobs to Redis or a database and rehydrating on
+   startup — but that scope is beyond the assignment.
+
+The second challenge was measuring latency accurately. Using
+`time.perf_counter()` around a requests.get() call includes Python
+interpreter overhead, connection pool acquisition, etc. Using
+`httpx.Response.elapsed` (a timedelta set by the httpx library after the
+full response body is received) gives a cleaner application-level view of
+the server's response time, which is what the assignment actually asks for.
