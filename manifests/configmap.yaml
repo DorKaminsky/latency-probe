@@ -1,0 +1,11 @@
+# ConfigMap holds non-secret runtime configuration.
+# Separating config from the image means we can change log level or default
+# target URL without rebuilding the container.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: latency-probe-config
+  namespace: latency-probe
+data:
+  LOG_LEVEL: "INFO"
+  DEFAULT_TARGET_URL: "https://httpbin.org/get"

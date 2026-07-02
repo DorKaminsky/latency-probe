@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: latency-probe
+  namespace: latency-probe
+  labels:
+    app: latency-probe
+spec:
+  # replicas=1 is intentional: job state (_jobs dict) lives in process memory.
+  # Scaling to >1 would require externalising state (e.g. Redis) so all
+  # replicas share the same job registry. HPA is still applied for CPU-based
+  # autoscaling once state is externalised.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: latency-probe
+  template:
+    metadata:
+      labels:
+        app: latency-probe
+    spec:
+      # Non-root security context mirrors the Dockerfile USER directive;
+      # defence-in-depth in case the image is run on a cluster without PodSecurity.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+        - name: latency-probe
+          image: ghcr.io/dorkaminsky/latency-probe:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: latency-probe-config
+          resources:
+            # Requests are what k8s uses for scheduling; limits cap runaway usage.
+            # These numbers are conservative for a lightweight async service.
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            # readinessProbe: traffic is sent only when this passes.
+            # Prevents the Service from routing to a pod still starting up.
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            # livenessProbe: pod is restarted if this fails repeatedly.
+            # Catches deadlocks or corrupted state that readiness can't see.
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: latency-probe
+  namespace: latency-probe
+spec:
+  # ClusterIP: internal-only — no external exposure needed since probing
+  # is triggered by internal callers (cron jobs, dashboards, other services).
+  # Change to LoadBalancer or add an Ingress if external REST access is required.
+  type: ClusterIP
+  selector:
+    app: latency-probe
+  ports:
+    - port: 80
+      targetPort: 8000
+      protocol: TCP

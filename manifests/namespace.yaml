@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: latency-probe
+  labels:
+    # PodSecurity admission: enforce restricted policy so no privileged pods
+    # can be scheduled into this namespace even if the Deployment forgets
+    # the securityContext.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
