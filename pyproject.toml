@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[project]
+name = "latency-probe"
+version = "1.0.0"
+description = "REST service that measures HTTP latency of remote resources"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.0",
+    # uvicorn[standard] pulls in websockets + httptools for production performance
+    "uvicorn[standard]==0.30.6",
+    # httpx is the modern async-native HTTP client; requests is sync-only
+    "httpx==0.27.2",
+    "pydantic==2.9.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+    # pytest-asyncio lets pytest run async test functions natively
+    "pytest-asyncio==0.24.0",
+    "httpx==0.27.2",
+    "flake8==7.1.1",
+    "black==24.10.0",
+    "isort==5.13.2",
+    "mypy==1.11.2",
+]
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[tool.pytest.ini_options]
+# asyncio_mode=auto: every async test function is treated as an asyncio coroutine
+# without needing @pytest.mark.asyncio on each one
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
