@@ -1,0 +1,17 @@
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.coverage
+htmlcov
+.env
+venv
+.venv
+.git
+*.md
+docker-compose*.yml
+samples.txt
+terraform/
+manifests/
+tests/
