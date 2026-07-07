@@ -7,6 +7,7 @@ POST   /probe                    → create a new probe job
 DELETE /probe/{job_id}           → stop a running job
 GET    /probe                    → list all running job IDs
 GET    /probe/{job_id}/results   → last N measurements for a job
+GET    /probe/{job_id}/analyze   → LLM diagnosis of recent measurements
 GET    /metrics                  → Prometheus metrics (scrape endpoint)
 GET    /health                   → liveness check (used by k8s readinessProbe)
 """
@@ -17,8 +18,9 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from .analyze import AnalyzeError, analyze
 from .models import ProbeRequest, ProbeResponse, ProbeResult
-from .prober import get_results, list_jobs, start_job, stop_job
+from .prober import get_job_url, get_results, list_jobs, start_job, stop_job
 from .security import SSRFError, resolve_and_check
 
 logging.basicConfig(
@@ -90,3 +92,25 @@ async def probe_results(
     if results is None:
         raise HTTPException(status_code=404, detail=f"job '{job_id}' not found")
     return results
+
+
+@app.get("/probe/{job_id}/analyze")
+async def probe_analyze(job_id: str) -> dict:
+    """Return an LLM-generated diagnosis of the job's recent measurements.
+
+    Requires ANTHROPIC_API_KEY. Results cached for 60s per job.
+    """
+    url = get_job_url(job_id)
+    results = get_results(job_id, limit=100)
+    if url is None or results is None:
+        raise HTTPException(status_code=404, detail=f"job '{job_id}' not found")
+    try:
+        diagnosis = await analyze(job_id, url, results)
+    except AnalyzeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {
+        "job_id": job_id,
+        "url": url,
+        "sample_size": len(results),
+        "diagnosis": diagnosis,
+    }

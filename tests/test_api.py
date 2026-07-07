@@ -137,3 +137,87 @@ async def test_delete_probe(client):
 async def test_delete_nonexistent_probe(client):
     resp = await client.delete("/probe/does-not-exist")
     assert resp.status_code == 404
+
+
+async def test_analyze_missing_api_key_returns_503(client, monkeypatch):
+    from app import analyze as analyze_mod
+
+    analyze_mod.clear_cache()
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    create = await client.post(
+        "/probe", json={"url": "https://httpbin.org/get", "interval_seconds": 5}
+    )
+    job_id = create.json()["job_id"]
+    # Seed a fake result so the endpoint doesn't 404 on empty results
+    from app.models import ProbeResult
+    from app.prober import _results
+
+    _results[job_id].append(
+        ProbeResult(
+            job_id=job_id,
+            url="https://httpbin.org/get",
+            timestamp="2026-07-07T00:00:00+00:00",
+            status_code=200,
+            latency_ms=150.0,
+            error=None,
+        )
+    )
+    resp = await client.get(f"/probe/{job_id}/analyze")
+    assert resp.status_code == 503
+    assert "ANTHROPIC_API_KEY" in resp.json()["detail"]
+
+
+async def test_analyze_not_found(client):
+    resp = await client.get("/probe/does-not-exist/analyze")
+    assert resp.status_code == 404
+
+
+async def test_analyze_success_with_mocked_llm(client, monkeypatch):
+    from app import analyze as analyze_mod
+    from app.models import ProbeResult
+    from app.prober import _results
+
+    analyze_mod.clear_cache()
+
+    # Mock the Anthropic client so no real API call is made
+    class FakeBlock:
+        type = "text"
+        text = "Latency is stable at 150ms with no errors. Pattern is healthy."
+
+    class FakeUsage:
+        input_tokens = 100
+        output_tokens = 20
+
+    class FakeResponse:
+        content = [FakeBlock()]
+        usage = FakeUsage()
+
+    class FakeMessages:
+        async def create(self, **kwargs):
+            return FakeResponse()
+
+    class FakeClient:
+        messages = FakeMessages()
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(analyze_mod, "_client", lambda: FakeClient())
+
+    create = await client.post(
+        "/probe", json={"url": "https://httpbin.org/get", "interval_seconds": 5}
+    )
+    job_id = create.json()["job_id"]
+    _results[job_id].append(
+        ProbeResult(
+            job_id=job_id,
+            url="https://httpbin.org/get",
+            timestamp="2026-07-07T00:00:00+00:00",
+            status_code=200,
+            latency_ms=150.0,
+            error=None,
+        )
+    )
+    resp = await client.get(f"/probe/{job_id}/analyze")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "healthy" in data["diagnosis"]
+    assert data["job_id"] == job_id
