@@ -174,6 +174,15 @@ def get_results(job_id: str, limit: int = 20) -> list[ProbeResult] | None:
     return list(buf)[-limit:]
 
 
+def get_job_url(job_id: str) -> str | None:
+    """Return the URL for a running job, or None if it doesn't exist."""
+    buf = _results.get(job_id)
+    if buf is None or not buf:
+        return None
+    # All results in the deque have the same url; last is cheapest to peek at
+    return buf[-1].url
+
+
 # Re-export for the route handler
 __all__ = [
     "SSRFError",

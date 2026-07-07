@@ -39,6 +39,16 @@ spec:
           envFrom:
             - configMapRef:
                 name: latency-probe-config
+          env:
+            # Optional — enables /probe/{id}/analyze. Create the secret with:
+            #   kubectl create secret generic latency-probe-secrets \
+            #     --from-literal=anthropic-api-key=sk-ant-...
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: latency-probe-secrets
+                  key: anthropic-api-key
+                  optional: true
           resources:
             # Requests are what k8s uses for scheduling; limits cap runaway usage.
             # These numbers are conservative for a lightweight async service.

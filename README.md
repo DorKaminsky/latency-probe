@@ -50,6 +50,10 @@ curl http://localhost:8000/probe/a1b2c3d4/results
 # Fetch last N measurements (max 100)
 curl "http://localhost:8000/probe/a1b2c3d4/results?limit=5"
 
+# LLM diagnosis of recent measurements (requires ANTHROPIC_API_KEY)
+curl http://localhost:8000/probe/a1b2c3d4/analyze
+# → {"job_id": "...", "diagnosis": "Latency is stable around 200ms with one 5.7s spike..."}
+
 # Stop a job
 curl -X DELETE http://localhost:8000/probe/a1b2c3d4
 
@@ -65,6 +69,16 @@ Output is written to stdout (success) / stderr (errors) in the format:
 ```
 job=a1b2c3d4 url=https://httpbin.org/get ts=2026-07-02T10:00:00+00:00 status=200 latency_ms=142.3 error=None
 ```
+
+### AI-powered anomaly analysis
+
+`GET /probe/{id}/analyze` feeds the ring buffer of recent measurements to
+Claude Haiku 4.5 and returns a 2-3 sentence diagnosis (baseline latency,
+spikes, error patterns, overall health). Cached per job for 60s.
+
+Set `ANTHROPIC_API_KEY` to enable it; without the key the endpoint returns
+503 and the rest of the service is unaffected. In Kubernetes, the deployment
+wires the key from a `latency-probe-secrets` Secret (`optional: true`).
 
 ### Security: SSRF protection
 
@@ -130,6 +144,7 @@ latency-probe/
 │   ├── main.py        # FastAPI routes
 │   ├── models.py      # Pydantic schemas + blocked-network list
 │   ├── security.py    # Async SSRF check + DNS-rebinding guard transport
+│   ├── analyze.py     # Claude-powered anomaly diagnosis (Haiku 4.5)
 │   └── prober.py      # Async polling logic + Prometheus metrics
 ├── tests/
 │   └── test_api.py
