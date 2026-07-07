@@ -15,9 +15,9 @@ WORKDIR /build
 # dependencies change, not on every source-code edit.
 COPY pyproject.toml .
 
-# --no-dev: skip test/lint tools in the production image
 # --system: install into the system Python so there's no venv to activate
-RUN uv pip install --system --no-dev --no-cache -e .
+# Dev extras ([dev]) are not referenced here so they are not installed
+RUN uv pip install --system --no-cache -e .
 
 # ── Stage 2: runtime ────────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
