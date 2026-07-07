@@ -41,3 +41,19 @@ interpreter overhead, connection pool acquisition, etc. Using
 `httpx.Response.elapsed` (a timedelta set by the httpx library after the
 full response body is received) gives a cleaner application-level view of
 the server's response time, which is what the assignment actually asks for.
+
+The third challenge was a security one I only noticed after building the
+happy path: this service is a textbook SSRF (Server-Side Request Forgery)
+vector. A caller can POST any URL — including http://169.254.169.254
+(the AWS instance metadata endpoint), internal k8s service IPs, or
+loopback addresses. An attacker who can reach the probe API can use it to
+pivot inside the cluster network or extract cloud credentials.
+
+The mitigation is to resolve the target hostname at validation time and
+reject any address that falls within RFC-1918 private ranges, loopback
+(127.0.0.0/8), or link-local (169.254.0.0/16). This is implemented in
+models.py via the `must_not_be_private` validator. The known limitation:
+DNS is checked at request time, not at each probe interval — a hostname
+could resolve to a different IP later (DNS rebinding). A production
+hardening would re-check the resolved IP on every probe attempt before
+opening the TCP connection.
