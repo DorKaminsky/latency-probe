@@ -49,11 +49,21 @@ vector. A caller can POST any URL — including http://169.254.169.254
 loopback addresses. An attacker who can reach the probe API can use it to
 pivot inside the cluster network or extract cloud credentials.
 
-The mitigation is to resolve the target hostname at validation time and
-reject any address that falls within RFC-1918 private ranges, loopback
-(127.0.0.0/8), or link-local (169.254.0.0/16). This is implemented in
-models.py via the `must_not_be_private` validator. The known limitation:
-DNS is checked at request time, not at each probe interval — a hostname
-could resolve to a different IP later (DNS rebinding). A production
-hardening would re-check the resolved IP on every probe attempt before
-opening the TCP connection.
+The mitigation happens in two places, sharing one blocklist (RFC-1918,
+loopback, link-local including 169.254.0.0/16, and IPv6 equivalents):
+
+1. Pre-flight: the route handler calls `resolve_and_check(url)` before
+   creating the job. This resolves the hostname via async
+   `loop.getaddrinfo` (with a 3-second timeout so a hostile DNS server
+   can't stall the API) and rejects the request if any resolved address
+   falls in a blocked range.
+
+2. Per-request: the probe loop uses a custom httpx transport
+   (`_SSRFGuardTransport`) that re-resolves the hostname and re-checks
+   the IP on every single request. This defends against DNS rebinding —
+   an attacker registering a domain that resolves to a public IP during
+   validation and flips to `169.254.169.254` on subsequent lookups.
+
+Additionally, `follow_redirects=False` prevents a 302 from escaping the
+check: without it, a target could redirect to an internal URL and bypass
+the transport-level guard.
