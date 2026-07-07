@@ -10,14 +10,14 @@ from pydantic import BaseModel, HttpUrl, field_validator
 _BLOCKED_NETWORKS = [
     ipaddress.ip_network(cidr)
     for cidr in (
-        "127.0.0.0/8",      # loopback
-        "10.0.0.0/8",       # RFC-1918 private
-        "172.16.0.0/12",    # RFC-1918 private
-        "192.168.0.0/16",   # RFC-1918 private
-        "169.254.0.0/16",   # link-local / AWS metadata
-        "::1/128",          # IPv6 loopback
-        "fc00::/7",         # IPv6 ULA
-        "fe80::/10",        # IPv6 link-local
+        "127.0.0.0/8",  # loopback
+        "10.0.0.0/8",  # RFC-1918 private
+        "172.16.0.0/12",  # RFC-1918 private
+        "192.168.0.0/16",  # RFC-1918 private
+        "169.254.0.0/16",  # link-local / AWS metadata
+        "::1/128",  # IPv6 loopback
+        "fc00::/7",  # IPv6 ULA
+        "fe80::/10",  # IPv6 link-local
     )
 ]
 
