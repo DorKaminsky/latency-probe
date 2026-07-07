@@ -20,18 +20,35 @@ import asyncio
 import logging
 import sys
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 
 import httpx
+from prometheus_client import Counter, Histogram
 
 from .models import ProbeResult
 
 logger = logging.getLogger(__name__)
 
-# Module-level dict: job_id -> asyncio.Task
+# Module-level dicts: job_id -> asyncio.Task / recent results
 # Simple enough for this scale; would move to Redis if we needed multi-instance
 # job tracking or persistence across restarts.
 _jobs: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+_results: dict[str, deque[ProbeResult]] = {}
+_RESULTS_MAXLEN = 100
+
+# Prometheus metrics — labelled by job_id so operators can alert per-target
+probe_requests_total = Counter(
+    "probe_requests_total",
+    "Total number of probe attempts",
+    ["job_id", "url", "status_code"],
+)
+probe_latency_seconds = Histogram(
+    "probe_latency_seconds",
+    "HTTP response latency per probe",
+    ["job_id", "url"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+)
 
 
 def _emit(result: ProbeResult) -> None:
@@ -45,8 +62,6 @@ def _emit(result: ProbeResult) -> None:
         f"error={result.error}"
     )
     if result.error:
-        # Errors go to stderr so they can be separated in log aggregators
-        # (e.g. CloudWatch, Loki) without regex filtering
         print(line, file=sys.stderr, flush=True)
         logger.error(line)
     else:
@@ -59,7 +74,7 @@ async def _probe_loop(job_id: str, url: str, interval: float) -> None:
     # (HTTP keep-alive) across measurements, reducing connection overhead
     # and giving more accurate application-level latency numbers.
     async with httpx.AsyncClient(
-        timeout=10.0,  # hard ceiling so a hung target doesn't block the task forever
+        timeout=10.0,
         follow_redirects=True,
     ) as client:
         while True:
@@ -70,35 +85,42 @@ async def _probe_loop(job_id: str, url: str, interval: float) -> None:
 
             try:
                 resp = await client.get(url)
-                # resp.elapsed is set by httpx after the full response is received
                 latency_ms = round(resp.elapsed.total_seconds() * 1000, 3)
                 status_code = resp.status_code
             except httpx.TimeoutException:
                 error = "timeout"
             except httpx.RequestError as exc:
-                # Catches DNS failures, connection refused, SSL errors, etc.
                 error = type(exc).__name__ + ": " + str(exc)
 
-            _emit(
-                ProbeResult(
-                    job_id=job_id,
-                    url=url,
-                    timestamp=ts,
-                    status_code=status_code,
-                    latency_ms=latency_ms,
-                    error=error,
-                )
+            result = ProbeResult(
+                job_id=job_id,
+                url=url,
+                timestamp=ts,
+                status_code=status_code,
+                latency_ms=latency_ms,
+                error=error,
             )
+            _emit(result)
+            if job_id in _results:
+                _results[job_id].append(result)
 
-            # asyncio.sleep yields back to the event loop, allowing other
-            # tasks (other probe jobs, incoming HTTP requests) to run
+            # Update Prometheus metrics
+            probe_requests_total.labels(
+                job_id=job_id,
+                url=url,
+                status_code=str(status_code) if status_code else "error",
+            ).inc()
+            if latency_ms is not None:
+                probe_latency_seconds.labels(job_id=job_id, url=url).observe(
+                    latency_ms / 1000
+                )
+
             await asyncio.sleep(interval)
 
 
 def start_job(url: str, interval: float) -> str:
     job_id = str(uuid.uuid4())[:8]
-    # create_task schedules the coroutine on the *running* event loop.
-    # FastAPI/uvicorn provides that loop; we don't manage it ourselves.
+    _results[job_id] = deque(maxlen=_RESULTS_MAXLEN)
     task = asyncio.create_task(_probe_loop(job_id, url, interval), name=job_id)
     _jobs[job_id] = task
     logger.info("started job=%s url=%s interval=%ss", job_id, url, interval)
@@ -109,8 +131,7 @@ def stop_job(job_id: str) -> bool:
     task = _jobs.pop(job_id, None)
     if task is None:
         return False
-    # task.cancel() sends CancelledError into the coroutine at its next
-    # await point (asyncio.sleep or httpx await), allowing clean teardown
+    _results.pop(job_id, None)
     task.cancel()
     logger.info("stopped job=%s", job_id)
     return True
@@ -118,3 +139,10 @@ def stop_job(job_id: str) -> bool:
 
 def list_jobs() -> list[str]:
     return list(_jobs.keys())
+
+
+def get_results(job_id: str, limit: int = 20) -> list[ProbeResult] | None:
+    buf = _results.get(job_id)
+    if buf is None:
+        return None
+    return list(buf)[-limit:]
