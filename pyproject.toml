@@ -17,6 +17,7 @@ dependencies = [
     # httpx is the modern async-native HTTP client; requests is sync-only
     "httpx==0.27.2",
     "pydantic==2.9.2",
+    "prometheus-client==0.21.0",
 ]
 
 [project.optional-dependencies]

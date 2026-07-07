@@ -1,17 +1,32 @@
+import ipaddress
+
 from pydantic import BaseModel, HttpUrl, field_validator
+
+# Private/loopback/link-local ranges that must never be probed.
+# See app/security.py for the enforcement logic — this list is exported so both
+# the pre-flight resolve step and per-probe re-check can share one source of truth.
+BLOCKED_NETWORKS = [
+    ipaddress.ip_network(cidr)
+    for cidr in (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    )
+]
 
 
 class ProbeRequest(BaseModel):
-    # HttpUrl validates the string is a well-formed URL at request time,
-    # so we never start a polling job against a garbage target
     url: HttpUrl
     interval_seconds: float
 
     @field_validator("interval_seconds")
     @classmethod
     def must_be_positive(cls, v: float) -> float:
-        # Reject zero or negative intervals upfront; a 0-second interval
-        # would spin the event loop into a busy-wait without sleeping
         if v <= 0:
             raise ValueError("interval_seconds must be > 0")
         return v
@@ -30,5 +45,4 @@ class ProbeResult(BaseModel):
     timestamp: str
     status_code: int | None
     latency_ms: float | None
-    # error is None on success; a string description on any failure
     error: str | None
