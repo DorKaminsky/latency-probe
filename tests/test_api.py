@@ -6,6 +6,7 @@ mocking internals — this way the tests catch real integration issues between
 FastAPI routing, Pydantic validation, and the prober module.
 """
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -73,9 +74,31 @@ async def test_create_probe_rejects_private_ip(client):
         "http://169.254.169.254/latest/meta-data/",
         "http://192.168.1.1/admin",
         "http://10.0.0.1/",
+        "http://127.0.0.1:8000/",
     ]:
         resp = await client.post("/probe", json={"url": url, "interval_seconds": 5})
         assert resp.status_code == 422, f"expected 422 for {url}"
+
+
+async def test_ssrf_guard_rejects_private_ip_at_probe_time(monkeypatch):
+    # DNS rebinding defence: _SSRFGuardTransport should reject a request whose
+    # host resolves to a private IP, even if it passed the pre-flight check.
+    import socket
+
+    from app.prober import _SSRFGuardTransport
+
+    async def fake_getaddrinfo(host, port, **kwargs):
+        # Simulate a hostname that resolves to a metadata IP
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.169.254", 0))]
+
+    monkeypatch.setattr(
+        "asyncio.get_running_loop",
+        lambda: type("L", (), {"getaddrinfo": staticmethod(fake_getaddrinfo)})(),
+    )
+    transport = _SSRFGuardTransport()
+    request = httpx.Request("GET", "http://evil.example.com/")
+    with pytest.raises(httpx.ConnectError, match="private IP"):
+        await transport.handle_async_request(request)
 
 
 async def test_list_probes(client):

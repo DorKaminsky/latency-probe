@@ -19,6 +19,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from .models import ProbeRequest, ProbeResponse, ProbeResult
 from .prober import get_results, list_jobs, start_job, stop_job
+from .security import SSRFError, resolve_and_check
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +53,11 @@ async def metrics() -> PlainTextResponse:
 async def create_probe(req: ProbeRequest) -> ProbeResponse:
     """Start a new latency measurement job."""
     url = str(req.url)
+    try:
+        await resolve_and_check(url)
+    except SSRFError as exc:
+        # 422 keeps validation errors consistent with Pydantic
+        raise HTTPException(status_code=422, detail=str(exc))
     job_id = start_job(url, req.interval_seconds)
     return ProbeResponse(
         job_id=job_id,

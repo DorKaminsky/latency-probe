@@ -3,17 +3,16 @@ Probe lifecycle management.
 
 Design notes
 ------------
-- asyncio.create_task per job: fits the scale of this service (tens of URLs,
-  not millions). Each task yields control during httpx.AsyncClient.get(), so
-  the event loop stays responsive. A heavier approach (Celery + Redis) would
-  add operational overhead for no gain here.
-
-- httpx.AsyncClient is created per-job rather than shared: each job has an
-  independent timeout and can be cancelled cleanly without affecting others.
-
-- resp.elapsed (from httpx) is the time spent waiting for the response body,
-  measured by the HTTP library itself — more accurate than wrapping with
-  time.perf_counter() because it excludes Python interpreter overhead.
+- asyncio.create_task per job: fits the scale of this service (tens of URLs).
+  Each task yields control during httpx.AsyncClient.get(), so the event loop
+  stays responsive.
+- httpx.AsyncClient is created per-job so each job has an independent timeout
+  and can be cancelled cleanly without affecting others.
+- resp.elapsed (from httpx) is the time the HTTP library measures for the
+  response, which is more accurate than wrapping with time.perf_counter().
+- SSRF: the caller-supplied hostname is resolved once in the route handler.
+  The probe loop additionally re-checks the resolved IP on every request via
+  a custom httpx transport, defending against DNS rebinding.
 """
 
 import asyncio
@@ -27,32 +26,58 @@ import httpx
 from prometheus_client import Counter, Histogram
 
 from .models import ProbeResult
+from .security import SSRFError, is_private_ip
 
 logger = logging.getLogger(__name__)
 
-# Module-level dicts: job_id -> asyncio.Task / recent results
-# Simple enough for this scale; would move to Redis if we needed multi-instance
-# job tracking or persistence across restarts.
 _jobs: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
 _results: dict[str, deque[ProbeResult]] = {}
 _RESULTS_MAXLEN = 100
 
-# Prometheus metrics — labelled by job_id so operators can alert per-target
+# Prometheus metrics
+# Deliberately NOT labelled by job_id — that would create an unbounded label
+# cardinality (new UUID per job, never cleaned up in Prometheus). URL is the
+# meaningful dimension for alerting.
 probe_requests_total = Counter(
     "probe_requests_total",
     "Total number of probe attempts",
-    ["job_id", "url", "status_code"],
+    ["url", "status_code"],
 )
 probe_latency_seconds = Histogram(
     "probe_latency_seconds",
     "HTTP response latency per probe",
-    ["job_id", "url"],
+    ["url"],
     buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
 )
 
 
+class _SSRFGuardTransport(httpx.AsyncHTTPTransport):
+    """httpx transport that re-checks the destination IP on every request.
+
+    Defends against DNS rebinding: even if the hostname passed validation,
+    the resolved IP could change to a private address later. We resolve
+    again here (getaddrinfo is cached briefly by the OS) and refuse to send
+    the request if it now resolves to a private range.
+    """
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        loop = asyncio.get_running_loop()
+        try:
+            import socket
+
+            infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise httpx.ConnectError(f"DNS lookup failed: {exc}") from exc
+        for info in infos:
+            if is_private_ip(info[4][0]):
+                raise httpx.ConnectError(
+                    f"blocked: {host} resolves to private IP {info[4][0]}"
+                )
+        return await super().handle_async_request(request)
+
+
 def _emit(result: ProbeResult) -> None:
-    """Write a structured log line to stdout (success) or stderr (error)."""
     line = (
         f"job={result.job_id} "
         f"url={result.url} "
@@ -70,12 +95,11 @@ def _emit(result: ProbeResult) -> None:
 
 
 async def _probe_loop(job_id: str, url: str, interval: float) -> None:
-    # A single AsyncClient per job reuses the underlying TCP connection
-    # (HTTP keep-alive) across measurements, reducing connection overhead
-    # and giving more accurate application-level latency numbers.
     async with httpx.AsyncClient(
+        transport=_SSRFGuardTransport(),
         timeout=10.0,
-        follow_redirects=True,
+        # follow_redirects=False: a 302 to a private IP would bypass the SSRF check
+        follow_redirects=False,
     ) as client:
         while True:
             ts = datetime.now(timezone.utc).isoformat()
@@ -104,16 +128,12 @@ async def _probe_loop(job_id: str, url: str, interval: float) -> None:
             if job_id in _results:
                 _results[job_id].append(result)
 
-            # Update Prometheus metrics
             probe_requests_total.labels(
-                job_id=job_id,
                 url=url,
                 status_code=str(status_code) if status_code else "error",
             ).inc()
             if latency_ms is not None:
-                probe_latency_seconds.labels(job_id=job_id, url=url).observe(
-                    latency_ms / 1000
-                )
+                probe_latency_seconds.labels(url=url).observe(latency_ms / 1000)
 
             await asyncio.sleep(interval)
 
@@ -122,6 +142,12 @@ def start_job(url: str, interval: float) -> str:
     job_id = str(uuid.uuid4())[:8]
     _results[job_id] = deque(maxlen=_RESULTS_MAXLEN)
     task = asyncio.create_task(_probe_loop(job_id, url, interval), name=job_id)
+    # If the task dies unexpectedly, clean up _results too.
+    task.add_done_callback(
+        lambda t: (
+            _results.pop(job_id, None) if t.done() and job_id not in _jobs else None
+        )
+    )
     _jobs[job_id] = task
     logger.info("started job=%s url=%s interval=%ss", job_id, url, interval)
     return job_id
@@ -146,3 +172,13 @@ def get_results(job_id: str, limit: int = 20) -> list[ProbeResult] | None:
     if buf is None:
         return None
     return list(buf)[-limit:]
+
+
+# Re-export for the route handler
+__all__ = [
+    "SSRFError",
+    "get_results",
+    "list_jobs",
+    "start_job",
+    "stop_job",
+]
