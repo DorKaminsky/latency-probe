@@ -24,8 +24,12 @@ docker compose up
 ### Run with Docker
 
 ```bash
+# Option A: build locally
 docker build -t latency-probe .
 docker run -p 8000:8000 latency-probe
+
+# Option B: pull the CI-published image
+docker run -p 8000:8000 ghcr.io/dorkaminsky/latency-probe:latest
 ```
 
 ## API
@@ -64,9 +68,17 @@ job=a1b2c3d4 url=https://httpbin.org/get ts=2026-07-02T10:00:00+00:00 status=200
 
 ### Security: SSRF protection
 
-URLs targeting private/internal addresses are rejected at validation time
-(RFC-1918, loopback, link-local, AWS metadata endpoint `169.254.169.254`).
-This prevents the probe service from being used as a pivot into internal networks.
+URLs targeting private/internal addresses are rejected. The defence is two-stage:
+
+1. **Pre-flight**: `POST /probe` resolves the hostname via async `getaddrinfo`
+   (3-second timeout) and rejects if any resolved IP is in RFC-1918, loopback,
+   link-local (incl. `169.254.169.254` AWS metadata), or IPv6 equivalents.
+2. **Per-request**: a custom httpx transport re-resolves and re-checks the IP
+   on every probe attempt, defending against DNS rebinding (a hostname that
+   flips to a private IP after validation).
+
+Redirects are disabled (`follow_redirects=False`) so a 302 to an internal URL
+cannot bypass the transport-level guard.
 
 ### Collect samples to a file
 
@@ -116,11 +128,12 @@ terraform apply
 latency-probe/
 ├── app/
 │   ├── main.py        # FastAPI routes
-│   ├── models.py      # Pydantic schemas + SSRF validation
+│   ├── models.py      # Pydantic schemas + blocked-network list
+│   ├── security.py    # Async SSRF check + DNS-rebinding guard transport
 │   └── prober.py      # Async polling logic + Prometheus metrics
 ├── tests/
 │   └── test_api.py
-├── manifests/         # Kubernetes manifests
+├── manifests/         # Kubernetes manifests (with Prometheus scrape annotations)
 ├── terraform/         # AWS EKS + ECR IaC
 ├── .github/workflows/
 │   └── ci.yml         # Lint → test → build & push to GHCR

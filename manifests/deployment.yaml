@@ -18,6 +18,12 @@ spec:
     metadata:
       labels:
         app: latency-probe
+      annotations:
+        # Standard Prometheus scrape annotations — the /metrics endpoint
+        # exposes probe_requests_total and probe_latency_seconds.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
     spec:
       # Non-root security context mirrors the Dockerfile USER directive;
       # defence-in-depth in case the image is run on a cluster without PodSecurity.
