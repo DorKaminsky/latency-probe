@@ -51,8 +51,8 @@ class ProbeRequest(BaseModel):
         host = v.host or ""
         if _is_private(host):
             raise ValueError(
-                f"URL targets a private or reserved address — probing internal "
-                f"hosts is not allowed (SSRF protection)"
+                "URL targets a private or reserved address — probing internal "
+                "hosts is not allowed (SSRF protection)"
             )
         return v
 

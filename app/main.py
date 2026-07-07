@@ -28,7 +28,9 @@ logging.basicConfig(
 app = FastAPI(
     title="latency-probe",
     version="1.0.0",
-    description="Measures HTTP response latency of remote resources on a configurable interval",
+    description=(
+        "Measures HTTP response latency of remote resources on a configurable interval"
+    ),
 )
 
 
