@@ -4,7 +4,22 @@ A REST service that measures the HTTP response latency of remote resources on a 
 
 ## Quick start
 
-### Run locally with uv
+### Optional: enable the AI feature
+
+Only needed if you want the `GET /probe/{id}/analyze` endpoint (Claude Haiku 4.5 anomaly diagnosis). Everything else works without a key.
+
+```bash
+cp .env.example .env
+# Edit .env and paste your key from https://console.anthropic.com/settings/keys
+```
+
+`docker compose` auto-loads `.env`. For `uv` or plain `docker run`, export it in your shell:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### Run locally with uv (development)
 
 ```bash
 curl -Lsf https://astral.sh/uv/install.sh | sh
@@ -13,24 +28,28 @@ uv pip install -e ".[dev]"
 uvicorn app.main:app --reload --port 8000
 ```
 
-### Run with Docker Compose (service + Prometheus)
+### Run with Docker Compose (recommended — service + Prometheus)
 
 ```bash
 docker compose up
 # latency-probe → http://localhost:8000
 # Prometheus     → http://localhost:9090
+# OpenAPI docs   → http://localhost:8000/docs
 ```
 
-### Run with Docker
+### Run with Docker (single container)
 
 ```bash
 # Option A: build locally
 docker build -t latency-probe .
-docker run -p 8000:8000 latency-probe
+docker run -p 8000:8000 -e ANTHROPIC_API_KEY latency-probe
 
 # Option B: pull the CI-published image
-docker run -p 8000:8000 ghcr.io/dorkaminsky/latency-probe:latest
+docker run -p 8000:8000 -e ANTHROPIC_API_KEY \
+  ghcr.io/dorkaminsky/latency-probe:latest
 ```
+
+The `-e ANTHROPIC_API_KEY` (no value) forwards the variable from your shell. Omit it if you're not using the AI feature.
 
 ## API
 
@@ -76,9 +95,16 @@ job=a1b2c3d4 url=https://httpbin.org/get ts=2026-07-02T10:00:00+00:00 status=200
 Claude Haiku 4.5 and returns a 2-3 sentence diagnosis (baseline latency,
 spikes, error patterns, overall health). Cached per job for 60s.
 
-Set `ANTHROPIC_API_KEY` to enable it; without the key the endpoint returns
-503 and the rest of the service is unaffected. In Kubernetes, the deployment
-wires the key from a `latency-probe-secrets` Secret (`optional: true`).
+**How to enable per run mode:**
+
+| Run mode | Where the key goes |
+|---|---|
+| `uv` / `uvicorn` | `export ANTHROPIC_API_KEY=sk-ant-...` in the shell before starting uvicorn |
+| `docker compose up` | Copy `.env.example` → `.env`, edit, then `docker compose up` (auto-loaded) |
+| `docker run` | `docker run -p 8000:8000 -e ANTHROPIC_API_KEY latency-probe` (forwards from shell) |
+| Kubernetes | Create Secret: `kubectl create secret generic latency-probe-secrets --from-literal=anthropic-api-key=sk-ant-...` — deployment.yaml already wires it in as `optional: true` |
+
+Without the key the endpoint returns 503 and the rest of the service is unaffected.
 
 ### Security: SSRF protection
 
@@ -154,6 +180,7 @@ latency-probe/
 │   └── ci.yml         # Lint → test → build & push to GHCR
 ├── docker-compose.yml # Local dev: service + Prometheus
 ├── prometheus.yml     # Prometheus scrape config
+├── .env.example       # Template for ANTHROPIC_API_KEY (optional)
 ├── Dockerfile
 ├── pyproject.toml
 ├── flow_diagram.md
