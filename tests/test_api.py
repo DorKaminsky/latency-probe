@@ -10,24 +10,23 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from app.prober import _jobs
+from app.prober import _jobs, _results
 
 
 @pytest.fixture(autouse=True)
 async def clear_jobs():
     """Ensure each test starts with no running jobs."""
     _jobs.clear()
+    _results.clear()
     yield
-    # Cancel all tasks created during the test to avoid event loop warnings
     for task in _jobs.values():
         task.cancel()
     _jobs.clear()
+    _results.clear()
 
 
 @pytest.fixture
 async def client():
-    # ASGITransport lets us drive the FastAPI app in-process without starting
-    # a real HTTP server — fast and deterministic
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
@@ -38,6 +37,12 @@ async def test_health(client):
     resp = await client.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+async def test_metrics_endpoint(client):
+    resp = await client.get("/metrics")
+    assert resp.status_code == 200
+    assert "probe_requests_total" in resp.text
 
 
 async def test_create_probe_returns_201(client):
@@ -54,7 +59,7 @@ async def test_create_probe_invalid_interval(client):
     resp = await client.post(
         "/probe", json={"url": "https://httpbin.org/get", "interval_seconds": -1}
     )
-    assert resp.status_code == 422  # Pydantic validation error
+    assert resp.status_code == 422
 
 
 async def test_create_probe_invalid_url(client):
@@ -64,6 +69,19 @@ async def test_create_probe_invalid_url(client):
     assert resp.status_code == 422
 
 
+async def test_create_probe_rejects_private_ip(client):
+    # SSRF protection: private/metadata IPs must be blocked
+    for url in [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://192.168.1.1/admin",
+        "http://10.0.0.1/",
+    ]:
+        resp = await client.post(
+            "/probe", json={"url": url, "interval_seconds": 5}
+        )
+        assert resp.status_code == 422, f"expected 422 for {url}"
+
+
 async def test_list_probes(client):
     await client.post(
         "/probe", json={"url": "https://httpbin.org/get", "interval_seconds": 5}
@@ -71,6 +89,21 @@ async def test_list_probes(client):
     resp = await client.get("/probe")
     assert resp.status_code == 200
     assert len(resp.json()["jobs"]) == 1
+
+
+async def test_results_empty_on_new_job(client):
+    create = await client.post(
+        "/probe", json={"url": "https://httpbin.org/get", "interval_seconds": 5}
+    )
+    job_id = create.json()["job_id"]
+    resp = await client.get(f"/probe/{job_id}/results")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_results_not_found(client):
+    resp = await client.get("/probe/does-not-exist/results")
+    assert resp.status_code == 404
 
 
 async def test_delete_probe(client):
