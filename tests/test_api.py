@@ -63,9 +63,7 @@ async def test_create_probe_invalid_interval(client):
 
 
 async def test_create_probe_invalid_url(client):
-    resp = await client.post(
-        "/probe", json={"url": "not-a-url", "interval_seconds": 5}
-    )
+    resp = await client.post("/probe", json={"url": "not-a-url", "interval_seconds": 5})
     assert resp.status_code == 422
 
 
@@ -76,9 +74,7 @@ async def test_create_probe_rejects_private_ip(client):
         "http://192.168.1.1/admin",
         "http://10.0.0.1/",
     ]:
-        resp = await client.post(
-            "/probe", json={"url": url, "interval_seconds": 5}
-        )
+        resp = await client.post("/probe", json={"url": url, "interval_seconds": 5})
         assert resp.status_code == 422, f"expected 422 for {url}"
 
 
